@@ -1,37 +1,21 @@
 package main
 
 import (
-	"flag"
+	"encoding/json"
 	"fmt"
+	jme "github.com/AndiBrunner/go-jmespath"
+	yml "github.com/AndiBrunner/yaml"
+	"io/ioutil"
 	"log"
 	"net/url"
 	"os"
-	"strings"
-	"sync"
-	"time"
-
-	"golang.org/x/net/context"
 	"path/filepath"
 	"strconv"
-	"bytes"
-
-	"io/ioutil"
+	"strings"
 	"text/template"
-
-	jp "github.com/AndiBrunner/gte/jsonpath"
-	"encoding/json"
-	jme "github.com/AndiBrunner/go-jmespath"
 )
 
-type sliceVar []string
-type hostFlagsVar []string
-
 type Context struct {
-}
-
-type HttpHeader struct {
-	name  string
-	value string
 }
 
 func (c *Context) Env() map[string]string {
@@ -43,67 +27,39 @@ func (c *Context) Env() map[string]string {
 	return env
 }
 
+type argFlags struct {
+	delims      string
+	noOverwrite bool
+}
+
 var (
-	buildVersion string
-	version      bool
-	poll         bool
-	wg           sync.WaitGroup
-
-	templatesFlag     sliceVar
-	templateDirsFlag  sliceVar
-	stdoutTailFlag    sliceVar
-	stderrTailFlag    sliceVar
-	headersFlag       sliceVar
-	delimsFlag        string
-	delims            []string
-	headers           []HttpHeader
-	urls              []url.URL
-	waitFlag          hostFlagsVar
-	waitRetryInterval time.Duration
-	waitTimeoutFlag   time.Duration
-	dependencyChan    chan struct{}
-	noOverwriteFlag   bool
-
-	ctx    context.Context
-	cancel context.CancelFunc
+	Version   = "release-1.0.0"
+	BuildTime = "2017-11-13 UTC"
+	ArgFlags  = argFlags{delims: "", noOverwrite: false}
+	delims    []string
 )
 
-func (i *hostFlagsVar) String() string {
-	return fmt.Sprint(*i)
-}
-
-func (i *hostFlagsVar) Set(value string) error {
-	*i = append(*i, value)
-	return nil
-}
-
-func (s *sliceVar) Set(value string) error {
-	*s = append(*s, value)
-	return nil
-}
-
-func (s *sliceVar) String() string {
-	return strings.Join(*s, ",")
-}
-
 func usage() {
-	println(`Usage: gte [options] [command]
+	println(`Usage: gte [options] template:dest
 
-Utility to simplify running applications in docker containers
+Go template engine
 
 Options:`)
-	flag.PrintDefaults()
+	println(`  -n --no-overwrite
+        Do not overwrite destination file if it already exists.`)
+	println(`  -d --delims
+        template tag delimiters. default "{{":"}}" `)
 
 	println(`
 Arguments:
-  command - command to be executed
+  template:dest - Template (/template:/dest). Can be passed multiple times. Does also support directories.
   `)
 
 	println(`Examples:
 `)
 	println(`   Generate /etc/nginx/nginx.conf using nginx.tmpl as a template.`)
 	println(`
-   gte -template nginx.tmpl:/etc/nginx/nginx.conf
+   gte nginx.tmpl:/etc/nginx/nginx.conf
 	`)
 
 	println(`For more information, see https://github.com/andibrunner/gte`)
@@ -111,60 +67,51 @@ Arguments:
 
 func main() {
 
-	flag.BoolVar(&version, "version", false, "show version")
+	var parsedArgs []string
 
-	flag.Var(&templatesFlag, "template", "Template (/template:/dest). Can be passed multiple times. Does also support directories")
-	flag.BoolVar(&noOverwriteFlag, "no-overwrite", false, "Do not overwrite destination file if it already exists.")
-	flag.StringVar(&delimsFlag, "delims", "", `template tag delimiters. default "{{":"}}" `)
-
-	flag.Usage = usage
-	flag.Parse()
-
-	if version {
-		fmt.Println(buildVersion)
-		return
-	}
-
-	if flag.NArg() == 0 && flag.NFlag() == 0 {
-		usage()
-		os.Exit(1)
-	}
-
-	if delimsFlag != "" {
-		delims = strings.Split(delimsFlag, ":")
-		if len(delims) != 2 {
-			log.Fatalf("bad delimiters argument: %s. expected \"left:right\"", delimsFlag)
-		}
-	}
-
-	for _, host := range waitFlag {
-		u, err := url.Parse(host)
-		if err != nil {
-			log.Fatalf("bad hostname provided: %s. %s", host, err.Error())
-		}
-		urls = append(urls, *u)
-	}
-
-	for _, h := range headersFlag {
-		//validate headers need -wait options
-		if len(waitFlag) == 0 {
-			log.Fatalf("-wait-http-header \"%s\" provided with no -wait option", h)
-		}
-
-		const errMsg = "bad HTTP Headers argument: %s. expected \"headerName: headerValue\""
-		if strings.Contains(h, ":") {
-			parts := strings.Split(h, ":")
-			if len(parts) != 2 {
-				log.Fatalf(errMsg, headersFlag)
+	//eval args
+	args := os.Args[1:]
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "-n", "--no-overwrite":
+			ArgFlags.noOverwrite = true
+		case "-d", "--delims":
+			if (i + 1) < len(args) {
+				i++
+				ArgFlags.delims = args[i]
+			} else {
+				usage()
+				os.Exit(0)
 			}
-			headers = append(headers, HttpHeader{name: strings.TrimSpace(parts[0]), value: strings.TrimSpace(parts[1])})
-		} else {
-			log.Fatalf(errMsg, headersFlag)
+		case "-v", "--version":
+			fmt.Println("Version:", Version)
+			os.Exit(0)
+		case "":
+			usage()
+			os.Exit(0)
+		default:
+			d := args[i]
+			if d[0:1] == "-" {
+				usage()
+				os.Exit(0)
+			}
+			parsedArgs = append(parsedArgs, args[i])
 		}
-
 	}
 
-	for _, t := range templatesFlag {
+	if len(parsedArgs) == 0 {
+		usage()
+		os.Exit(0)
+	}
+
+	if ArgFlags.delims != "" {
+		delims = strings.Split(ArgFlags.delims, ":")
+		if len(delims) != 2 {
+			log.Fatalf("bad delimiters argument: %s. expected \"left:right\"", ArgFlags.delims)
+		}
+	}
+
+	for _, t := range parsedArgs {
 		template, dest := t, ""
 		if strings.Contains(t, ":") {
 			parts := strings.Split(t, ":")
@@ -250,33 +197,40 @@ func isTrue(s string) bool {
 	return false
 }
 
-func jsonQuery2(jsonString string, jsonQuery string) (interface{}, error) {
+func jsonQuery(jsonString string, jsonQueryFull string) (interface{}, error) {
 
 	var jsonData interface{}
 	var jsonBytes = []byte(jsonString)
-	err := json.Unmarshal(jsonBytes, &jsonData)
+	var jsonQuery string
+	var formatIndent bool = false
+	var formatYaml bool = false
+	var jsonParts []string
+	var jsonParameter string
+	var jsonIndent int
 
-	j := jp.New("JQ")
-	j.AllowMissingKeys(false) //allowMissingKeys)
+	if jsonQueryFull[0:1] == "-" {
+		jsonParts = strings.SplitN(jsonQueryFull, " ", 2)
+		if len(jsonParts) == 2 {
+			jsonQuery = jsonParts[1]
+			jsonParameter = jsonParts[0][1:]
 
-	err = j.Parse(jsonQuery)
-	if err != nil {
-		return nil, err
+			switch jsonParameter[0:1] {
+			case "i":
+				var err error
+				formatIndent = true
+				jsonIndent, err = strconv.Atoi(jsonParameter[1:])
+				if err != nil {
+					jsonIndent = 2
+				}
+			case "y":
+				formatYaml = true
+			default:
+
+			}
+		}
+	} else {
+		jsonQuery = jsonQueryFull
 	}
-
-	buf := new(bytes.Buffer)
-	err = j.Execute(buf, jsonData)
-	if err != nil {
-		return nil, err
-	}
-	println(buf.String())
-	return buf, nil
-}
-
-func jsonQuery(jsonString string, jsonQuery string) (interface{}, error) {
-
-	var jsonData interface{}
-	var jsonBytes = []byte(jsonString)
 
 	parser := jme.NewParser()
 
@@ -294,12 +248,20 @@ func jsonQuery(jsonString string, jsonQuery string) (interface{}, error) {
 		return nil, err
 	}
 
-	toJSON, err := json.Marshal(result)
+	var output []byte
+	if formatIndent {
+		output, err = json.MarshalIndent(result, "", strings.Repeat(" ", jsonIndent))
+	} else if formatYaml {
+		t, _ := json.Marshal(result)
+		output, err = yml.JSONToYAML(t)
+	} else {
+		output, err = json.Marshal(result)
+	}
 	if err != nil {
 		return nil, err
 	}
-	println(string(toJSON))
-	return string(toJSON), nil
+
+	return string(output), nil
 }
 
 func loop(args ...int) (<-chan int, error) {
@@ -328,19 +290,19 @@ func loop(args ...int) (<-chan int, error) {
 
 func generateFile(templatePath, destPath string) bool {
 	tmpl := template.New(filepath.Base(templatePath)).Funcs(template.FuncMap{
-		"contains":  contains,
-		"exists":    exists,
-		"split":     strings.Split,
-		"replace":   strings.Replace,
-		"default":   defaultValue,
-		"parseUrl":  parseUrl,
-		"atoi":      strconv.Atoi,
-		"add":       add,
-		"isTrue":    isTrue,
-		"lower":     strings.ToLower,
-		"upper":     strings.ToUpper,
-		"jsonQuery": jsonQuery,
-		"loop":      loop,
+		"contains":   contains,
+		"exists":     exists,
+		"split":      strings.Split,
+		"replace":    strings.Replace,
+		"default":    defaultValue,
+		"parseUrl":   parseUrl,
+		"atoi":       strconv.Atoi,
+		"add":        add,
+		"isTrue":     isTrue,
+		"lower":      strings.ToLower,
+		"upper":      strings.ToUpper,
+		"jsonQuery":  jsonQuery,
+		"loop":       loop,
 		"trimSuffix": strings.TrimSuffix,
 	})
 
@@ -353,7 +315,7 @@ func generateFile(templatePath, destPath string) bool {
 	}
 
 	// Don't overwrite destination file if it exists and no-overwrite flag passed
-	if _, err := os.Stat(destPath); err == nil && noOverwriteFlag {
+	if _, err := os.Stat(destPath); err == nil && ArgFlags.noOverwrite {
 		return false
 	}
 
@@ -371,15 +333,16 @@ func generateFile(templatePath, destPath string) bool {
 		log.Fatalf("template error: %s\n", err)
 	}
 
-/*	if fi, err := os.Stat(destPath); err == nil {
-		if err := dest.Chmod(fi.Mode()); err != nil {
-			log.Fatalf("unable to chmod temp file: %s\n", err)
+	/*
+		if fi, err := os.Stat(destPath); err == nil {
+			if err := dest.Chmod(fi.Mode()); err != nil {
+				log.Fatalf("unable to chmod temp file: %s\n", err)
+			}
+			if err := dest.Chown(int(fi.Sys().(*syscall.Stat_t).Uid), int(fi.Sys().(*syscall.Stat_t).Gid)); err != nil {
+				log.Fatalf("unable to chown temp file: %s\n", err)
+			}
 		}
-		//		if err := dest.Chown(int(fi.Sys().(*syscall.Stat_t).Uid), int(fi.Sys().(*syscall.Stat_t).Gid)); err != nil {
-		//			log.Fatalf("unable to chown temp file: %s\n", err)
-		//		}
-	}
-*/
+	*/
 	return true
 }
 
@@ -409,4 +372,3 @@ func generateDir(templateDir, destDir string) bool {
 
 	return true
 }
-

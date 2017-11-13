@@ -1,0 +1,16 @@
+{
+	"ImportPath": "github.com/AndiBrunner/gte",
+	"GoVersion": "go1.8",
+	"GodepVersion": "v79",
+	"Deps": [
+		{
+			"ImportPath": "github.com/AndiBrunner/go-jmespath",
+			"Comment": "0.2.2-14-gbd40a43",
+			"Rev": "bd40a432e4c76585ef6b72d3fd96fb9b6dc7b68d"
+		},
+		{
+			"ImportPath": "golang.org/x/net/context",
+			"Rev": "97d8e4e174133a4d1d2171380e510eb4dea8f5ea"
+		}
+	]
+}
