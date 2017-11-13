@@ -1,4 +1,4 @@
-# gte
+# GTE
 Inspired by the dockerize template library, GTE is a go template engine based on the golang template package and the go-jmespath library (JMESPath is a query language for JSON). 
 
 ### Usage:
