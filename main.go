@@ -33,14 +33,14 @@ type argFlags struct {
 }
 
 var (
-	Version   = "release-1.0.0"
-	BuildTime = "2017-11-13 UTC"
+	Version   = "release-1.0.1"
+	BuildTime = "2017-11-18 UTC"
 	ArgFlags  = argFlags{delims: "", noOverwrite: false}
 	delims    []string
 )
 
 func usage() {
-	println(`Usage: gte [options] template:dest
+	println(`Usage: gte [options] template destination [template destination]...
 
 Go template engine
 
@@ -52,14 +52,15 @@ Options:`)
 
 	println(`
 Arguments:
-  template:dest - Template (/template:/dest). Can be passed multiple times. Does also support directories.
+  template     - the template. Can be passed multiple times together with destination as an ordered pair (2-tuple). Does also support directories.
+  destination  - the destination . Can be passed multiple times together with destination as an ordered pair (2-tuple). Does also support directories.
   `)
 
 	println(`Examples:
 `)
 	println(`   Generate /etc/nginx/nginx.conf using nginx.tmpl as a template.`)
 	println(`
-   gte nginx.tmpl:/etc/nginx/nginx.conf
+   gte nginx.tmpl /etc/nginx/nginx.conf
 	`)
 
 	println(`For more information, see https://github.com/andibrunner/gte`)
@@ -99,7 +100,7 @@ func main() {
 		}
 	}
 
-	if len(parsedArgs) == 0 {
+	if len(parsedArgs) == 0 || len(parsedArgs)%2 == 1{
 		usage()
 		os.Exit(0)
 	}
@@ -111,15 +112,9 @@ func main() {
 		}
 	}
 
-	for _, t := range parsedArgs {
-		template, dest := t, ""
-		if strings.Contains(t, ":") {
-			parts := strings.Split(t, ":")
-			if len(parts) != 2 {
-				log.Fatalf("bad template argument: %s. expected \"/template:/dest\"", t)
-			}
-			template, dest = parts[0], parts[1]
-		}
+	for i:= 0; i < len(parsedArgs);i= i+2 {
+		template := parsedArgs[i]
+		dest := parsedArgs[i+1]
 
 		fi, err := os.Stat(template)
 		if err != nil {
